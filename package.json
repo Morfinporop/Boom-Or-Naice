@@ -1,21 +1,18 @@
 {
-  "name": "mystery-circles-game",
+  "name": "react-vite-tailwind",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "start": "node server.js"
+    "preview": "vite preview"
   },
   "dependencies": {
     "clsx": "2.1.1",
-    "express": "^5.2.1",
+    "firebase": "^12.9.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "socket.io": "^4.8.3",
-    "socket.io-client": "^4.8.3",
     "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
