@@ -1,315 +1,271 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
+import cors from 'cors';
+import path from 'path';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import fs from 'fs';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-const server = createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+app.use(cors());
 
 // Serve static files from dist
-app.use(express.static(join(__dirname, 'dist')));
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+}
 
-// SPA fallback - Express 5 compatible
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  transports: ['websocket', 'polling'],
+  pingTimeout: 30000,
+  pingInterval: 10000,
+});
+
+// ──── Game Storage ────
+const games = new Map();
+const waitingPlayers = [];
+const timers = new Map();
+
+function generateId() {
+  const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+  let r = '';
+  for (let i = 0; i < 6; i++) r += chars[Math.floor(Math.random() * chars.length)];
+  return r;
+}
+
+function createGame(p1Id) {
+  const id = generateId();
+  const game = {
+    id,
+    players: {
+      player1: { id: p1Id, ready: false, positions: [], item: null },
+      player2: null,
+    },
+    board: Array(9).fill(null),
+    currentPlayer: null,
+    phase: 'waiting',
+    timer: 30,
+    winner: null,
+    createdAt: Date.now(),
+  };
+  games.set(id, game);
+  return game;
+}
+
+function clearTimer(gid) {
+  if (timers.has(gid)) {
+    clearInterval(timers.get(gid));
+    timers.delete(gid);
+  }
+}
+
+function startTimer(gid) {
+  clearTimer(gid);
+  const game = games.get(gid);
+  if (!game || game.phase !== 'playing') return;
+  game.timer = 30;
+
+  const interval = setInterval(() => {
+    const g = games.get(gid);
+    if (!g || g.phase !== 'playing') { clearInterval(interval); timers.delete(gid); return; }
+    g.timer--;
+    if (g.timer <= 0) {
+      clearInterval(interval);
+      timers.delete(gid);
+      g.currentPlayer = g.currentPlayer === 'player1' ? 'player2' : 'player1';
+      g.timer = 30;
+      io.to(gid).emit('turnChange', { currentPlayer: g.currentPlayer, timer: g.timer });
+      startTimer(gid);
+    } else {
+      io.to(gid).emit('timerUpdate', g.timer);
+    }
+  }, 1000);
+  timers.set(gid, interval);
+}
+
+function checkWinner(gid) {
+  const game = games.get(gid);
+  if (!game) return;
+
+  const p1Cells = game.board.filter(c => c && c.player === 'player1');
+  const p1Rev = p1Cells.filter(c => c.revealed);
+  const p2Cells = game.board.filter(c => c && c.player === 'player2');
+  const p2Rev = p2Cells.filter(c => c.revealed);
+
+  if (p1Rev.length === 3) {
+    game.phase = 'finished';
+    game.winner = 'player2';
+    clearTimer(gid);
+    io.to(gid).emit('gameOver', { winner: 'player2', item: game.players.player2?.item });
+    setTimeout(() => games.delete(gid), 300000);
+  } else if (p2Rev.length === 3) {
+    game.phase = 'finished';
+    game.winner = 'player1';
+    clearTimer(gid);
+    io.to(gid).emit('gameOver', { winner: 'player1', item: game.players.player1?.item });
+    setTimeout(() => games.delete(gid), 300000);
+  } else {
+    game.currentPlayer = game.currentPlayer === 'player1' ? 'player2' : 'player1';
+    game.timer = 30;
+    io.to(gid).emit('turnChange', { currentPlayer: game.currentPlayer, timer: game.timer });
+    startTimer(gid);
+  }
+}
+
+// Cleanup old games every 10 min
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, g] of games.entries()) {
+    if (now - g.createdAt > 3600000) {
+      clearTimer(id);
+      games.delete(id);
+    }
+  }
+}, 600000);
+
+// ──── Socket.io ────
+io.on('connection', (socket) => {
+  console.log(`[+] ${socket.id}`);
+
+  socket.on('createGame', () => {
+    const game = createGame(socket.id);
+    socket.join(game.id);
+    socket.emit('gameCreated', { gameId: game.id, playerNumber: 1 });
+    console.log(`[*] Game ${game.id} created`);
+  });
+
+  socket.on('joinGame', (gameId) => {
+    const gid = String(gameId).trim().toLowerCase();
+    const game = games.get(gid);
+    if (!game) { socket.emit('error', 'Игра не найдена. Проверьте код.'); return; }
+    if (game.players.player2) { socket.emit('error', 'Игра уже заполнена.'); return; }
+    if (game.players.player1.id === socket.id) { socket.emit('error', 'Нельзя присоединиться к своей игре.'); return; }
+
+    game.players.player2 = { id: socket.id, ready: false, positions: [], item: null };
+    game.phase = 'setup';
+    socket.join(gid);
+
+    io.to(gid).emit('gameStarted', { gameId: gid });
+    socket.emit('playerAssigned', { playerNumber: 2 });
+    io.to(game.players.player1.id).emit('playerAssigned', { playerNumber: 1 });
+    console.log(`[*] Player 2 joined ${gid}`);
+  });
+
+  socket.on('findGame', () => {
+    // Clean stale
+    for (let i = waitingPlayers.length - 1; i >= 0; i--) {
+      if (!waitingPlayers[i].connected) waitingPlayers.splice(i, 1);
+    }
+
+    if (waitingPlayers.length > 0 && waitingPlayers[0].id !== socket.id) {
+      const p1 = waitingPlayers.shift();
+      const game = createGame(p1.id);
+      game.players.player2 = { id: socket.id, ready: false, positions: [], item: null };
+      game.phase = 'setup';
+      p1.join(game.id);
+      socket.join(game.id);
+      io.to(game.id).emit('gameStarted', { gameId: game.id });
+      p1.emit('playerAssigned', { playerNumber: 1 });
+      socket.emit('playerAssigned', { playerNumber: 2 });
+      console.log(`[*] Quick match ${game.id}`);
+    } else {
+      if (!waitingPlayers.find(s => s.id === socket.id)) waitingPlayers.push(socket);
+      socket.emit('waitingForPlayer');
+    }
+  });
+
+  socket.on('selectItem', ({ gameId, item }) => {
+    const game = games.get(gameId);
+    if (!game) return;
+    const pn = game.players.player1.id === socket.id ? 'player1' : 'player2';
+    game.players[pn].item = item;
+    io.to(gameId).emit('itemSelected', { playerNumber: pn, item });
+  });
+
+  socket.on('selectPositions', ({ gameId, positions }) => {
+    const game = games.get(gameId);
+    if (!game) return;
+    const pn = game.players.player1.id === socket.id ? 'player1' : 'player2';
+    if (!Array.isArray(positions) || positions.length !== 3) return;
+    if (!positions.every(p => p >= 0 && p < 9)) return;
+
+    game.players[pn].positions = positions;
+    game.players[pn].ready = true;
+    positions.forEach(pos => { game.board[pos] = { player: pn, revealed: false }; });
+    io.to(gameId).emit('positionsSelected', { playerNumber: pn });
+
+    if (game.players.player1.ready && game.players.player2?.ready) {
+      game.phase = 'playing';
+      game.currentPlayer = 'player1';
+      game.timer = 30;
+      io.to(gameId).emit('gamePhase', {
+        phase: 'playing',
+        currentPlayer: game.currentPlayer,
+        timer: game.timer,
+      });
+      startTimer(gameId);
+      console.log(`[>] Game started ${gameId}`);
+    }
+  });
+
+  socket.on('selectCell', ({ gameId, position }) => {
+    const game = games.get(gameId);
+    if (!game || game.phase !== 'playing') return;
+    const pn = game.players.player1.id === socket.id ? 'player1' : 'player2';
+    if (game.currentPlayer !== pn) return;
+    if (position < 0 || position > 8) return;
+    const cell = game.board[position];
+    if (cell && cell.revealed) return;
+
+    if (cell) {
+      game.board[position].revealed = true;
+    } else {
+      game.board[position] = { player: 'empty', revealed: true };
+    }
+
+    clearTimer(gameId);
+    io.to(gameId).emit('cellRevealed', { position, player: cell ? cell.player : 'empty' });
+    setTimeout(() => checkWinner(gameId), 400);
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`[-] ${socket.id}`);
+    const wIdx = waitingPlayers.findIndex(s => s.id === socket.id);
+    if (wIdx !== -1) waitingPlayers.splice(wIdx, 1);
+
+    for (const [gid, game] of games.entries()) {
+      if (game.players.player1?.id === socket.id || game.players.player2?.id === socket.id) {
+        io.to(gid).emit('playerDisconnected');
+        clearTimer(gid);
+        games.delete(gid);
+        break;
+      }
+    }
+  });
+});
+
+// ──── SPA Fallback (Express 5 compatible) ────
 app.use((req, res, next) => {
-  if (req.method === 'GET' && !req.path.includes('.')) {
-    res.sendFile(join(__dirname, 'dist', 'index.html'));
+  if (req.method === 'GET' && !req.path.startsWith('/socket.io')) {
+    const indexPath = path.join(__dirname, 'dist', 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(200).send('Building... Please wait and refresh.');
+    }
   } else {
     next();
   }
 });
 
-// Game state storage
-const games = new Map();
-const waitingPlayers = [];
-let connectedPlayersCount = 0;
-
-// Generate random game ID
-function generateGameId() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let result = '';
-  for (let i = 0; i < 4; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
-// Broadcast online players count
-function broadcastPlayersCount() {
-  io.emit('playersOnline', connectedPlayersCount);
-}
-
-io.on('connection', (socket) => {
-  console.log('Player connected:', socket.id);
-  connectedPlayersCount++;
-  broadcastPlayersCount();
-
-  // Create a new game
-  socket.on('createGame', () => {
-    const gameId = generateGameId();
-    
-    games.set(gameId, {
-      id: gameId,
-      player1: socket.id,
-      player2: null,
-      player1Item: null,
-      player2Item: null,
-      player1Positions: [],
-      player2Positions: [],
-      currentPlayer: 'player1',
-      phase: 'waiting',
-      timer: 30,
-      timerInterval: null,
-      player1Found: 0,
-      player2Found: 0
-    });
-    
-    socket.join(gameId);
-    socket.gameId = gameId;
-    socket.playerNumber = 'player1';
-    
-    socket.emit('gameCreated', { gameId, playerNumber: 1 });
-    console.log(`Game created: ${gameId}`);
-  });
-
-  // Join existing game
-  socket.on('joinGame', (gameId) => {
-    const game = games.get(gameId.toUpperCase());
-    
-    if (!game) {
-      socket.emit('error', 'Game not found');
-      return;
-    }
-    
-    if (game.player2) {
-      socket.emit('error', 'Game is full');
-      return;
-    }
-    
-    game.player2 = socket.id;
-    socket.join(gameId);
-    socket.gameId = gameId;
-    socket.playerNumber = 'player2';
-    
-    socket.emit('playerAssigned', { playerNumber: 2 });
-    
-    // Start the game
-    game.phase = 'setup';
-    io.to(gameId).emit('gameStarted');
-    console.log(`Player 2 joined game: ${gameId}`);
-  });
-
-  // Find a random game (quick match)
-  socket.on('findGame', () => {
-    if (waitingPlayers.length > 0) {
-      const waitingPlayer = waitingPlayers.shift();
-      const gameId = generateGameId();
-      
-      games.set(gameId, {
-        id: gameId,
-        player1: waitingPlayer.id,
-        player2: socket.id,
-        player1Item: null,
-        player2Item: null,
-        player1Positions: [],
-        player2Positions: [],
-        currentPlayer: 'player1',
-        phase: 'setup',
-        timer: 30,
-        timerInterval: null,
-        player1Found: 0,
-        player2Found: 0
-      });
-      
-      waitingPlayer.join(gameId);
-      waitingPlayer.gameId = gameId;
-      waitingPlayer.playerNumber = 'player1';
-      
-      socket.join(gameId);
-      socket.gameId = gameId;
-      socket.playerNumber = 'player2';
-      
-      waitingPlayer.emit('playerAssigned', { playerNumber: 1 });
-      socket.emit('playerAssigned', { playerNumber: 2 });
-      
-      io.to(gameId).emit('gameStarted');
-      console.log(`Quick match started: ${gameId}`);
-    } else {
-      waitingPlayers.push(socket);
-      socket.emit('waitingForPlayer');
-      console.log('Player waiting for match');
-    }
-  });
-
-  // Select item
-  socket.on('selectItem', ({ gameId, item }) => {
-    const game = games.get(gameId);
-    if (!game) return;
-    
-    if (socket.playerNumber === 'player1') {
-      game.player1Item = item;
-    } else {
-      game.player2Item = item;
-    }
-    
-    io.to(gameId).emit('itemSelected', {
-      playerNumber: socket.playerNumber,
-      item
-    });
-  });
-
-  // Select positions
-  socket.on('selectPositions', ({ gameId, positions }) => {
-    const game = games.get(gameId);
-    if (!game) return;
-    
-    if (socket.playerNumber === 'player1') {
-      game.player1Positions = positions;
-    } else {
-      game.player2Positions = positions;
-    }
-    
-    io.to(gameId).emit('positionsSelected', {
-      playerNumber: socket.playerNumber
-    });
-    
-    // Check if both players are ready
-    if (game.player1Positions.length === 3 && game.player2Positions.length === 3) {
-      game.phase = 'playing';
-      game.currentPlayer = Math.random() > 0.5 ? 'player1' : 'player2';
-      game.timer = 30;
-      
-      io.to(gameId).emit('gamePhase', {
-        phase: 'playing',
-        currentPlayer: game.currentPlayer,
-        timer: game.timer
-      });
-      
-      startTimer(game, gameId);
-      console.log(`Game ${gameId} started, ${game.currentPlayer} goes first`);
-    }
-  });
-
-  // Select cell to reveal
-  socket.on('selectCell', ({ gameId, position }) => {
-    const game = games.get(gameId);
-    if (!game || game.phase !== 'playing') return;
-    
-    if (socket.playerNumber !== game.currentPlayer) {
-      return;
-    }
-    
-    // Determine which player's positions to check
-    const opponentPositions = socket.playerNumber === 'player1' 
-      ? game.player2Positions 
-      : game.player1Positions;
-    
-    const isHit = opponentPositions.includes(position);
-    
-    io.to(gameId).emit('cellRevealed', {
-      position,
-      player: socket.playerNumber,
-      isHit
-    });
-    
-    // Update found count
-    if (isHit) {
-      if (socket.playerNumber === 'player1') {
-        game.player1Found++;
-      } else {
-        game.player2Found++;
-      }
-      
-      // Check for win
-      const found = socket.playerNumber === 'player1' ? game.player1Found : game.player2Found;
-      if (found >= 3) {
-        clearInterval(game.timerInterval);
-        game.phase = 'finished';
-        
-        const winnerItem = socket.playerNumber === 'player1' ? game.player2Item : game.player1Item;
-        io.to(gameId).emit('gameOver', {
-          winner: socket.playerNumber,
-          item: winnerItem
-        });
-        
-        // Clean up game after delay
-        setTimeout(() => {
-          games.delete(gameId);
-        }, 60000);
-        
-        return;
-      }
-    }
-    
-    // Switch turns
-    game.currentPlayer = game.currentPlayer === 'player1' ? 'player2' : 'player1';
-    game.timer = 30;
-    
-    io.to(gameId).emit('turnChange', {
-      currentPlayer: game.currentPlayer,
-      timer: game.timer
-    });
-  });
-
-  // Disconnect
-  socket.on('disconnect', () => {
-    console.log('Player disconnected:', socket.id);
-    connectedPlayersCount--;
-    broadcastPlayersCount();
-    
-    // Remove from waiting list
-    const waitingIndex = waitingPlayers.findIndex(p => p.id === socket.id);
-    if (waitingIndex > -1) {
-      waitingPlayers.splice(waitingIndex, 1);
-    }
-    
-    // Notify opponent if in game
-    if (socket.gameId) {
-      const game = games.get(socket.gameId);
-      if (game) {
-        clearInterval(game.timerInterval);
-        socket.to(socket.gameId).emit('playerDisconnected');
-        games.delete(socket.gameId);
-      }
-    }
-  });
-});
-
-function startTimer(game, gameId) {
-  if (game.timerInterval) {
-    clearInterval(game.timerInterval);
-  }
-  
-  game.timerInterval = setInterval(() => {
-    game.timer--;
-    
-    if (game.timer <= 0) {
-      // Auto switch turn
-      game.currentPlayer = game.currentPlayer === 'player1' ? 'player2' : 'player1';
-      game.timer = 30;
-      
-      io.to(gameId).emit('turnChange', {
-        currentPlayer: game.currentPlayer,
-        timer: game.timer
-      });
-    } else {
-      io.to(gameId).emit('timerUpdate', game.timer);
-    }
-  }, 1000);
-}
-
 const PORT = process.env.PORT || 8080;
-
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`http://localhost:${PORT}`);
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n  LUXURY BATTLE Server`);
+  console.log(`  Port: ${PORT}`);
+  console.log(`  http://localhost:${PORT}\n`);
 });
