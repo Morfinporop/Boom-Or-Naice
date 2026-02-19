@@ -19,9 +19,13 @@ const io = new Server(server, {
 // Serve static files from dist
 app.use(express.static(join(__dirname, 'dist')));
 
-// SPA fallback
-app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'dist', 'index.html'));
+// SPA fallback - Express 5 compatible
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.includes('.')) {
+    res.sendFile(join(__dirname, 'dist', 'index.html'));
+  } else {
+    next();
+  }
 });
 
 // Game state storage

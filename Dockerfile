@@ -1,5 +1,5 @@
-# Use Node.js 20 Alpine
-FROM node:20-alpine AS builder
+# Use Node.js 22 Alpine
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
