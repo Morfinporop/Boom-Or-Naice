@@ -1,12 +1,117 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>УГАДАЙ 3 | Мультиплеер Онлайн</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💎</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content="LUXURY BATTLE - Find your opponent's luxury items first to win!" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    
+    <!-- Preconnect to Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    
+    <!-- Poppins Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <title>LUXURY BATTLE</title>
+    
+    <style>
+      /* Prevent FOUC */
+      html {
+        background: #000000;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000000;
+        min-height: 100vh;
+        min-height: -webkit-fill-available;
+      }
+      
+      /* Loading screen */
+      #loading {
+        position: fixed;
+        inset: 0;
+        background: #000000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 9999;
+        font-family: 'Poppins', sans-serif;
+        color: white;
+      }
+      
+      #loading h1 {
+        font-size: 2rem;
+        font-weight: 900;
+        letter-spacing: -0.05em;
+        margin: 0 0 0.25rem 0;
+      }
+      
+      #loading p {
+        font-size: 0.875rem;
+        font-weight: 200;
+        letter-spacing: 0.3em;
+        color: rgba(255,255,255,0.5);
+        margin: 0;
+      }
+      
+      #loading .dots {
+        display: flex;
+        gap: 6px;
+        margin-top: 2rem;
+      }
+      
+      #loading .dot {
+        width: 8px;
+        height: 8px;
+        background: white;
+        border-radius: 50%;
+        animation: loadingBounce 0.6s ease-in-out infinite;
+      }
+      
+      #loading .dot:nth-child(2) { animation-delay: 0.15s; }
+      #loading .dot:nth-child(3) { animation-delay: 0.3s; }
+      
+      @keyframes loadingBounce {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+      }
+      
+      /* Hide loading when app is ready */
+      .loaded #loading {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.3s ease;
+      }
+    </style>
   </head>
   <body>
+    <!-- Loading Screen -->
+    <div id="loading">
+      <h1>LUXURY</h1>
+      <p>BATTLE</p>
+      <div class="dots">
+        <div class="dot"></div>
+        <div class="dot"></div>
+        <div class="dot"></div>
+      </div>
+    </div>
+    
     <div id="root"></div>
+    
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Hide loading screen when app loads
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          document.body.classList.add('loaded');
+        }, 500);
+      });
+    </script>
   </body>
 </html>

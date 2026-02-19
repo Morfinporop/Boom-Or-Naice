@@ -1,18 +1,22 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "luxury-battle",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server.js"
   },
   "dependencies": {
     "clsx": "2.1.1",
-    "firebase": "^12.9.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "tailwind-merge": "3.4.0"
   },
   "devDependencies": {
