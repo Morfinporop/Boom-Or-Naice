@@ -134,7 +134,7 @@ const translations = {
     playAgain: 'ИГРАТЬ СНОВА',
     enterCode: 'ВВЕДИ КОД ИГРЫ',
     join: 'ВОЙТИ',
-    footer: 'LUXURY БИТВА © 2024',
+    footer: 'Rolex or Shanel © 2026',
     categories: {
       all: 'ВСЕ',
       bags: 'СУМКИ',
